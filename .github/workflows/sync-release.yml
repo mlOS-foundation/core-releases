@@ -35,9 +35,11 @@ jobs:
           && sudo apt-get update \
           && sudo apt-get install gh -y
       
-      - name: Authenticate gh CLI
+      - name: Authenticate gh CLI (Initial)
         run: |
+          # Initial auth with GITHUB_TOKEN (for core-releases operations)
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          echo "✅ Authenticated with GITHUB_TOKEN for core-releases operations"
       
       - name: Determine Version to Sync
         id: version
@@ -76,10 +78,18 @@ jobs:
           echo "No version to sync, exiting"
           exit 0
       
+      - name: Authenticate with PAT
+        run: |
+          if [ -n "${{ secrets.CORE_ACCESS_TOKEN }}" ]; then
+            echo "✅ CORE_ACCESS_TOKEN found - using PAT for authentication"
+            echo "${{ secrets.CORE_ACCESS_TOKEN }}" | gh auth login --with-token
+            echo "✅ Authenticated with PAT"
+          else
+            echo "⚠️  CORE_ACCESS_TOKEN not found - will try GITHUB_TOKEN (may fail for private repos)"
+            echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          fi
+      
       - name: Verify Release Exists in Core
-        env:
-          # Try PAT if available, otherwise use GITHUB_TOKEN
-          GH_TOKEN: ${{ secrets.CORE_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           
@@ -98,7 +108,7 @@ jobs:
           done
           
           if [ -z "$FOUND" ]; then
-            echo "⚠️  Cannot verify release exists"
+            echo "❌ Cannot find release in core repo"
             echo "Tried: $VERSION, $VERSION_WITH_V, $VERSION_WITHOUT_V"
             echo ""
             if [ -z "${{ secrets.CORE_ACCESS_TOKEN }}" ]; then
@@ -106,8 +116,8 @@ jobs:
               echo "Please add CORE_ACCESS_TOKEN secret (PAT) to enable access"
               exit 1
             else
-              echo "⚠️  Release may not exist or PAT may not have access"
-              echo "Attempting to continue..."
+              echo "⚠️  PAT is set but still cannot access - check PAT permissions"
+              exit 1
             fi
           else
             # Update version to the one that was found
@@ -116,15 +126,22 @@ jobs:
       
       - name: Get Release Info from Core
         id: release_info
-        env:
-          GH_TOKEN: ${{ secrets.CORE_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           
-          # Try to get release info (use PAT if available)
+          # Use the normalized version from previous step
+          if [ -n "${{ steps.version.outputs.version }}" ]; then
+            VERSION="${{ steps.version.outputs.version }}"
+          fi
+          
+          # Try to get release info
           if ! gh release view "$VERSION" --repo mlOS-foundation/core --json name,body,isPrerelease,assets > /tmp/release_info.json 2>/dev/null; then
             echo "❌ Failed to get release info from core repo"
-            echo "GITHUB_TOKEN cannot access private repos. Please add CORE_ACCESS_TOKEN secret (PAT)."
+            if [ -z "${{ secrets.CORE_ACCESS_TOKEN }}" ]; then
+              echo "GITHUB_TOKEN cannot access private repos. Please add CORE_ACCESS_TOKEN secret (PAT)."
+            else
+              echo "PAT is set but cannot access. Check PAT has 'repo' scope and access to mlOS-foundation/core"
+            fi
             exit 1
           fi
           
@@ -169,10 +186,13 @@ jobs:
           fi
       
       - name: Download and Upload Artifacts
-        env:
-          GH_TOKEN: ${{ secrets.CORE_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          
+          # Use the normalized version from previous step
+          if [ -n "${{ steps.version.outputs.version }}" ]; then
+            VERSION="${{ steps.version.outputs.version }}"
+          fi
           
           # Create temp directory for downloads
           mkdir -p /tmp/artifacts
@@ -184,18 +204,11 @@ jobs:
             --repo mlOS-foundation/core \
             --dir /tmp/artifacts; then
             echo "❌ Failed to download artifacts from private core repo"
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "GITHUB_TOKEN Limitation"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo ""
-            echo "GITHUB_TOKEN from public repo workflows cannot access private repos."
-            echo ""
-            echo "Solution: Add a PAT as a secret:"
-            echo "  1. Create a Personal Access Token (PAT) with 'repo' scope"
-            echo "  2. Add it as a secret named 'CORE_ACCESS_TOKEN' in core-releases repo"
-            echo "  3. The workflow will automatically use it for accessing core repo"
-            echo ""
+            if [ -z "${{ secrets.CORE_ACCESS_TOKEN }}" ]; then
+              echo "GITHUB_TOKEN cannot access private repos. Please add CORE_ACCESS_TOKEN secret (PAT)."
+            else
+              echo "PAT is set but cannot download. Check PAT has 'repo' scope and access to mlOS-foundation/core"
+            fi
             exit 1
           fi
           
