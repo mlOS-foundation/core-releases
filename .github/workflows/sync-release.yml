@@ -83,16 +83,35 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           
-          # Try to view release (may fail if GITHUB_TOKEN can't access private repo)
-          if ! gh release view "$VERSION" --repo mlOS-foundation/core 2>/dev/null; then
-            echo "⚠️  Cannot verify release exists (GITHUB_TOKEN may not have access to private repo)"
-            echo "Attempting to continue - download will fail if release doesn't exist"
+          # Normalize version (try with and without 'v' prefix)
+          VERSION_WITH_V="v${VERSION#v}"  # Ensure it has 'v'
+          VERSION_WITHOUT_V="${VERSION#v}"  # Remove 'v' if present
+          
+          # Try both versions
+          FOUND=""
+          for VER in "$VERSION" "$VERSION_WITH_V" "$VERSION_WITHOUT_V"; do
+            if gh release view "$VER" --repo mlOS-foundation/core 2>/dev/null; then
+              echo "✅ Release found: $VER"
+              FOUND="$VER"
+              break
+            fi
+          done
+          
+          if [ -z "$FOUND" ]; then
+            echo "⚠️  Cannot verify release exists"
+            echo "Tried: $VERSION, $VERSION_WITH_V, $VERSION_WITHOUT_V"
             echo ""
-            echo "Note: If this fails, you may need to:"
-            echo "  1. Add CORE_ACCESS_TOKEN secret (PAT with repo access)"
-            echo "  2. Or ensure GITHUB_TOKEN has access to private repos"
+            if [ -z "${{ secrets.CORE_ACCESS_TOKEN }}" ]; then
+              echo "❌ GITHUB_TOKEN cannot access private repos"
+              echo "Please add CORE_ACCESS_TOKEN secret (PAT) to enable access"
+              exit 1
+            else
+              echo "⚠️  Release may not exist or PAT may not have access"
+              echo "Attempting to continue..."
+            fi
           else
-            echo "✅ Release $VERSION exists in core repo"
+            # Update version to the one that was found
+            echo "version=$FOUND" >> $GITHUB_OUTPUT
           fi
       
       - name: Get Release Info from Core
