@@ -1,0 +1,177 @@
+name: Sync Release from Core
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to sync (e.g., v2.3.3-alpha)'
+        required: true
+        type: string
+  repository_dispatch:
+    types: [core-release-published]
+  schedule:
+    # Check for new releases every 15 minutes
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core-releases
+        uses: actions/checkout@v4
+        with:
+          repository: mlOS-foundation/core-releases
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Install gh CLI
+        run: |
+          type -p curl >/dev/null || (apt-get update && apt-get install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+          && sudo apt-get update \
+          && sudo apt-get install gh -y
+      
+      - name: Authenticate gh CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+      
+      - name: Determine Version to Sync
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using version from dispatch: $VERSION"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using version from input: $VERSION"
+          else
+            # Scheduled run - check for latest release in core that's not in core-releases
+            echo "Checking for new releases in core..."
+            LATEST_CORE=$(gh release list --repo mlOS-foundation/core --limit 1 --json tagName --jq '.[0].tagName' || echo "")
+            if [ -z "$LATEST_CORE" ] || [ "$LATEST_CORE" = "null" ]; then
+              echo "No releases found in core"
+              echo "version=" >> $GITHUB_OUTPUT
+            else
+              # Check if this release exists in core-releases
+              if gh release view "$LATEST_CORE" --repo mlOS-foundation/core-releases 2>/dev/null; then
+                echo "Latest release $LATEST_CORE already exists in core-releases"
+                echo "version=" >> $GITHUB_OUTPUT
+              else
+                VERSION="$LATEST_CORE"
+                echo "version=$VERSION" >> $GITHUB_OUTPUT
+                echo "Found new release to sync: $VERSION"
+              fi
+            fi
+          fi
+      
+      - name: Skip if no version
+        if: steps.version.outputs.version == ''
+        run: |
+          echo "No version to sync, exiting"
+          exit 0
+      
+      - name: Verify Release Exists in Core
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! gh release view "$VERSION" --repo mlOS-foundation/core 2>/dev/null; then
+            echo "❌ Release $VERSION does not exist in core repo"
+            exit 1
+          fi
+          echo "✅ Release $VERSION exists in core repo"
+      
+      - name: Get Release Info from Core
+        id: release_info
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release view "$VERSION" --repo mlOS-foundation/core --json name,body,isPrerelease,assets > /tmp/release_info.json
+          NAME=$(jq -r '.name' /tmp/release_info.json)
+          BODY=$(jq -r '.body' /tmp/release_info.json)
+          PRERELEASE=$(jq -r '.isPrerelease' /tmp/release_info.json)
+          ASSET_COUNT=$(jq -r '.assets | length' /tmp/release_info.json)
+          
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "asset_count=$ASSET_COUNT" >> $GITHUB_OUTPUT
+          
+          echo "Release info:"
+          echo "  Name: $NAME"
+          echo "  Prerelease: $PRERELEASE"
+          echo "  Assets: $ASSET_COUNT"
+      
+      - name: Create Release in core-releases
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NAME="${{ steps.release_info.outputs.name }}"
+          BODY="${{ steps.release_info.outputs.body }}"
+          PRERELEASE="${{ steps.release_info.outputs.prerelease }}"
+          
+          if gh release view "$VERSION" --repo mlOS-foundation/core-releases 2>/dev/null; then
+            echo "Release $VERSION already exists in core-releases, updating notes..."
+            gh release edit "$VERSION" \
+              --title "$NAME" \
+              --notes "$BODY" \
+              --repo mlOS-foundation/core-releases || echo "Note: Could not update notes"
+          else
+            echo "Creating release $VERSION in core-releases..."
+            gh release create "$VERSION" \
+              --title "$NAME" \
+              --notes "$BODY" \
+              $([ "$PRERELEASE" = "true" ] && echo "--prerelease" || echo "") \
+              --repo mlOS-foundation/core-releases
+            echo "✅ Release created"
+          fi
+      
+      - name: Download and Upload Artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          
+          # Create temp directory for downloads
+          mkdir -p /tmp/artifacts
+          cd /tmp/artifacts
+          
+          # Download all assets from core release
+          echo "Downloading artifacts from core release $VERSION..."
+          gh release download "$VERSION" \
+            --repo mlOS-foundation/core \
+            --dir /tmp/artifacts || {
+              echo "⚠️  Failed to download artifacts (may not have access to private repo)"
+              echo "If using GITHUB_TOKEN, it may not have access to private core repo"
+              exit 1
+            }
+          
+          # Upload all artifacts to core-releases release
+          echo "Uploading artifacts to core-releases release $VERSION..."
+          for file in /tmp/artifacts/*; do
+            if [ -f "$file" ]; then
+              FILENAME=$(basename "$file")
+              echo "Uploading: $FILENAME"
+              gh release upload "$VERSION" "$file" \
+                --repo mlOS-foundation/core-releases \
+                --clobber || echo "⚠️  Failed to upload $FILENAME"
+            fi
+          done
+          
+          echo "✅ Artifacts synced"
+      
+      - name: Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ASSET_COUNT="${{ steps.release_info.outputs.asset_count }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Release Sync Complete"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Version: $VERSION"
+          echo "Assets: $ASSET_COUNT"
+          echo "Release: https://github.com/mlOS-foundation/core-releases/releases/tag/$VERSION"
+          echo ""
+
