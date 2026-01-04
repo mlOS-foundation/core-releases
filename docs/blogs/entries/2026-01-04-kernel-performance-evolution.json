@@ -1,0 +1,171 @@
+{
+  "id": "kernel-performance-evolution-v7",
+  "title": "MLOS Core Kernel Performance Evolution: A Deep Dive into v6.3.0 to v7.0.0",
+  "date": "2026-01-04",
+  "author": {
+    "name": "MLOS Core Team",
+    "github": "mlOS-foundation",
+    "role": "Core Development Team"
+  },
+  "category": "release-analysis",
+  "featured": true,
+  "badge": "DEEP DIVE",
+  "summary": "A comprehensive analysis of MLOS Core's performance journey from v6.3.0-alpha through v7.0.0-beta to the stable v7.0.0 release. This post examines the kernel-level optimizations that achieved up to 40% memory reduction and 4x throughput improvements.",
+  "reading_time": "12 min read",
+  "content": "# MLOS Core Kernel Performance Evolution: v6.3.0 to v7.0.0\n\n## Executive Summary\n\nOver the past month, the MLOS Core kernel has undergone a significant transformation. Starting from v6.3.0-alpha's foundational improvements, through v7.0.0-beta's runtime optimizations, to the stable v7.0.0 release's memory management breakthroughs—we've achieved remarkable performance gains across the board.\n\n**Key Achievements:**\n- **25-40% memory reduction** through tensor fusion and deduplication\n- **4× reduction** in lock contention for batch inference\n- **3.6M ops/sec** tensor pool throughput\n- **<50μs** per-inference overhead (down from ~200μs)\n- **32 models** validated with comprehensive golden test data\n\n---\n\n## Release Timeline\n\n| Version | Date | Type | Focus Area |\n|---------|------|------|------------|\n| v6.3.0-alpha | Dec 31, 2025 | Alpha | Foundation & ONNX Optimization |\n| v7.0.0-beta | Jan 2, 2026 | Beta | Runtime Performance |\n| v7.0.0 | Jan 3, 2026 | Stable | Memory Optimization |\n\n---\n\n## Phase 1: Foundation (v6.3.0-alpha)\n\n### What We Started With\n\nThe v6.3.0-alpha release established the baseline for our optimization journey:\n\n- **ONNX CPU Optimizations**: Initial CPU execution path improvements\n- **Input Auto-generation**: Automatic BERT input tensor generation\n- **E2E Validation**: 32/32 models passing end-to-end tests\n- **Binary Distribution**: Cross-platform builds (Linux, macOS Intel/ARM)\n\n### Baseline Performance Metrics\n\n```\nPer-inference overhead: ~200μs\nLock acquisitions (batch=4): 4 locks\nMemory allocation: Standard malloc/free\nNUMA awareness: None\n```\n\nThis release gave us a stable foundation but highlighted several optimization opportunities in the scheduler and memory subsystems.\n\n---\n\n## Phase 2: Runtime Performance (v7.0.0-beta)\n\n### Tensor Pool Pre-allocation\n\nThe biggest runtime improvement came from eliminating per-inference allocation overhead:\n\n**Before (v6.3.0-alpha):**\n```c\n// Each inference: malloc → compute → free\nvoid* tensor = malloc(size);  // ~50-200μs\ncompute(tensor);\nfree(tensor);                 // ~10-50μs\n```\n\n**After (v7.0.0-beta):**\n```c\n// O(1) pool operations\nmlos_tensor_t* tensor = mlos_tensor_pool_acquire(pool);  // <1μs\ncompute(tensor);\nmlos_tensor_pool_release(pool, tensor);                   // <1μs\n```\n\n**Results:**\n- Throughput: **3.6 million ops/sec**\n- Overhead: Reduced from ~200μs to **<50μs** (4× improvement)\n- Lock-free fast path for common operations\n\n### Batch Inference Scheduling\n\nFor multi-task inference, we introduced batch submission:\n\n**Before:**\n```\nTask 1: acquire_lock → submit → release_lock\nTask 2: acquire_lock → submit → release_lock\nTask 3: acquire_lock → submit → release_lock\nTask 4: acquire_lock → submit → release_lock\n= 4 lock acquisitions\n```\n\n**After:**\n```\nBatch: acquire_lock → submit_all(4) → release_lock\n= 1 lock acquisition\n```\n\nThis provides **N× reduction** in lock contention for batch size N.\n\n### NUMA Thread Affinity\n\nFor multi-socket systems, we added automatic NUMA awareness:\n\n```c\nmlos_tensor_alloc_numa(size, numa_node);\nmlos_set_thread_affinity(node);\n```\n\nThis ensures inference threads run on the same NUMA node as their tensor memory, reducing cross-socket memory access latency.\n\n---\n\n## Phase 3: Memory Optimization (v7.0.0)\n\n### Tensor Fusion Detection\n\nThe stable release introduced intelligent memory reuse based on tensor lifetime analysis:\n\n**Problem:** Many tensors have non-overlapping lifetimes but are allocated separately.\n\n**Solution:** Analyze computation graph to identify tensors that can share memory:\n\n```c\nmlos_fusion_ctx_t* ctx = mlos_fusion_analyze(model);\nmlos_fusion_execute(ctx);  // Apply memory sharing\nmlos_fusion_stats_t stats = mlos_fusion_get_stats(ctx);\n// stats.memory_saved: 15-25%\n```\n\n**Results:**\n- Memory reduction: **15-25%**\n- Zero runtime overhead (analysis done at load time)\n- Automatic fallback for incompatible tensors\n\n### Cross-Model Tensor Deduplication\n\nFor multi-model deployments, we detect duplicate tensors across models:\n\n**How it works:**\n1. Compute SHA-256 hash of tensor contents\n2. Store in content-addressable cache\n3. Return existing tensor if hash matches\n4. Copy-on-write semantics for thread safety\n\n```c\nmlos_dedup_enable(global_context);\nmlos_dedup_hash_tensor(tensor);  // SHA-256 fingerprint\nmlos_dedup_analyze_models(models, count);\nmlos_dedup_stats_t stats = mlos_dedup_get_stats();\n// stats.duplicates_found, stats.memory_saved\n```\n\n**Results:**\n- Additional memory savings: **10-20%**\n- Most effective with embedding models sharing vocabulary\n- Transparent to inference code\n\n### Combined Impact\n\nWhen both optimizations are enabled:\n\n| Scenario | Fusion Only | Dedup Only | Combined |\n|----------|-------------|------------|----------|\n| Single model | 15-25% | 0% | 15-25% |\n| 2 similar models | 15-25% | 10-15% | 25-35% |\n| 4+ embedding models | 15-25% | 15-20% | 30-40% |\n\n---\n\n## Performance Comparison Summary\n\n### Latency Improvements\n\n| Metric | v6.3.0-alpha | v7.0.0-beta | v7.0.0 |\n|--------|--------------|-------------|--------|\n| Per-inference overhead | ~200μs | <50μs | <50μs |\n| Tensor acquire/release | N/A | O(1) | O(1) |\n| Lock acquisitions (batch=4) | 4 | 1 | 1 |\n| p99 latency (small models) | 2.5ms | 1.2ms | 0.8ms |\n\n### Throughput Improvements\n\n| Metric | v6.3.0-alpha | v7.0.0-beta | v7.0.0 |\n|--------|--------------|-------------|--------|\n| Tensor pool ops/sec | N/A | 3.6M | 3.6M |\n| Small model speedup | baseline | +10% | +10% |\n| Large model speedup | baseline | +40% | +40% |\n\n### Memory Improvements\n\n| Metric | v6.3.0-alpha | v7.0.0-beta | v7.0.0 |\n|--------|--------------|-------------|--------|\n| Tensor fusion savings | 0% | 0% | 15-25% |\n| Deduplication savings | 0% | 0% | 10-20% |\n| Combined savings | 0% | 0% | 25-40% |\n\n---\n\n## Test Coverage Evolution\n\n| Version | Kernel Tests | E2E Models | Golden Data |\n|---------|--------------|------------|-------------|\n| v6.3.0-alpha | 8 | 32 | 18 |\n| v7.0.0-beta | 12 | 32 | 18 |\n| v7.0.0 | 18 | 32 | 32 |\n\n**New tests in v7.0.0:**\n- Tensor fusion lifecycle and statistics\n- Cross-model deduplication with SHA-256\n- Memory pressure scenarios\n- Multi-model deployment simulation\n\n---\n\n## API Evolution\n\n### New APIs in v7.0.0-beta\n\n```c\n// Tensor Pool\nmlos_tensor_pool_create()\nmlos_tensor_pool_destroy()\nmlos_tensor_pool_acquire()\nmlos_tensor_pool_release()\nmlos_tensor_pool_get_stats()\nmlos_tensor_pool_prewarm()\n\n// NUMA\nmlos_tensor_alloc_numa()\n\n// Batch Scheduling\nmlos_sched_submit_batch()\n```\n\n### New APIs in v7.0.0\n\n```c\n// Tensor Fusion\nmlos_fusion_analyze()\nmlos_fusion_execute()\nmlos_fusion_get_stats()\n\n// Deduplication\nmlos_dedup_hash_tensor()\nmlos_dedup_enable()\nmlos_dedup_analyze_models()\nmlos_dedup_get_stats()\n```\n\n---\n\n## Recommendations\n\n### For Single-Model Deployments\n\n1. **Enable tensor fusion** at model load time\n2. **Use tensor pools** for high-throughput inference\n3. **Set NUMA affinity** on multi-socket systems\n\n### For Multi-Model Deployments\n\n1. **Enable both fusion and deduplication**\n2. **Group similar models** for better dedup hit rates\n3. **Monitor memory savings** via stats APIs\n\n### For Batch Inference\n\n1. **Use `mlos_sched_submit_batch()`** for multi-task submissions\n2. **Tune batch sizes** based on workload\n3. **Pre-warm tensor pools** before high-load periods\n\n---\n\n## What's Next\n\nThe v7.0.0 release establishes a strong foundation for future optimizations:\n\n- **GPU memory pooling** (planned for v7.1.0)\n- **Dynamic tensor fusion** for runtime graph changes\n- **Distributed deduplication** across nodes\n- **Profile-guided optimization** based on runtime metrics\n\n---\n\n## Conclusion\n\nThe journey from v6.3.0-alpha to v7.0.0 represents a significant advancement in MLOS Core's performance capabilities. Through careful optimization of the runtime scheduler and innovative memory management techniques, we've achieved:\n\n- **4× reduction** in per-inference overhead\n- **Up to 40%** memory savings for multi-model deployments\n- **Comprehensive test coverage** across 32 validated models\n\nThese improvements make MLOS Core an even more compelling choice for production ML deployments where performance and resource efficiency are critical.\n\n---\n\n*For detailed technical documentation, see:*\n- [Kernel Performance Analysis](https://github.com/mlOS-foundation/core/blob/main/docs/KERNEL_PERFORMANCE_ANALYSIS.md)\n- [Performance Execution Plan](https://github.com/mlOS-foundation/core/blob/main/docs/KERNEL_PERFORMANCE_EXECUTION_PLAN.md)\n- [Changelog](https://github.com/mlOS-foundation/core/blob/main/CHANGELOG.md)",
+  "performance_data": {
+    "releases_compared": [
+      {
+        "version": "v6.3.0-alpha",
+        "date": "2025-12-31",
+        "name": "Binary Distribution Release",
+        "type": "alpha"
+      },
+      {
+        "version": "v7.0.0-beta",
+        "date": "2026-01-02",
+        "name": "First Beta Release",
+        "type": "beta"
+      },
+      {
+        "version": "v7.0.0",
+        "date": "2026-01-03",
+        "name": "Kernel Optimization Release",
+        "type": "stable"
+      }
+    ],
+    "metrics": [
+      {
+        "name": "Per-inference overhead",
+        "unit": "μs",
+        "values": {
+          "v6.3.0-alpha": "~200",
+          "v7.0.0-beta": "<50",
+          "v7.0.0": "<50"
+        },
+        "improvement": "4× reduction"
+      },
+      {
+        "name": "Tensor pool throughput",
+        "unit": "ops/sec",
+        "values": {
+          "v6.3.0-alpha": "N/A",
+          "v7.0.0-beta": "3.6M",
+          "v7.0.0": "3.6M"
+        },
+        "improvement": "New capability"
+      },
+      {
+        "name": "Lock acquisitions (batch=4)",
+        "unit": "locks",
+        "values": {
+          "v6.3.0-alpha": 4,
+          "v7.0.0-beta": 1,
+          "v7.0.0": 1
+        },
+        "improvement": "4× reduction"
+      },
+      {
+        "name": "Tensor fusion savings",
+        "unit": "%",
+        "values": {
+          "v6.3.0-alpha": 0,
+          "v7.0.0-beta": 0,
+          "v7.0.0": "15-25"
+        },
+        "improvement": "15-25% memory reduction"
+      },
+      {
+        "name": "Deduplication savings",
+        "unit": "%",
+        "values": {
+          "v6.3.0-alpha": 0,
+          "v7.0.0-beta": 0,
+          "v7.0.0": "10-20"
+        },
+        "improvement": "10-20% memory reduction"
+      },
+      {
+        "name": "Combined memory savings",
+        "unit": "%",
+        "values": {
+          "v6.3.0-alpha": 0,
+          "v7.0.0-beta": 0,
+          "v7.0.0": "25-40"
+        },
+        "improvement": "25-40% memory reduction"
+      },
+      {
+        "name": "Kernel tests",
+        "unit": "tests",
+        "values": {
+          "v6.3.0-alpha": 8,
+          "v7.0.0-beta": 12,
+          "v7.0.0": 18
+        },
+        "improvement": "125% increase"
+      },
+      {
+        "name": "Models with golden data",
+        "unit": "models",
+        "values": {
+          "v6.3.0-alpha": 18,
+          "v7.0.0-beta": 18,
+          "v7.0.0": 32
+        },
+        "improvement": "78% increase"
+      }
+    ]
+  },
+  "key_highlights": [
+    {
+      "title": "4× Faster Inference Overhead",
+      "description": "Per-inference overhead reduced from ~200μs to <50μs through tensor pool pre-allocation",
+      "icon": "zap"
+    },
+    {
+      "title": "25-40% Memory Reduction",
+      "description": "Combined tensor fusion and cross-model deduplication for significant memory savings",
+      "icon": "memory"
+    },
+    {
+      "title": "3.6M ops/sec Throughput",
+      "description": "Lock-free tensor pool operations enable massive throughput for high-frequency inference",
+      "icon": "trending-up"
+    },
+    {
+      "title": "32 Validated Models",
+      "description": "Comprehensive golden test data coverage across NLP, embedding, and vision models",
+      "icon": "check-circle"
+    }
+  ],
+  "links": [
+    {
+      "text": "Read Full Post",
+      "url": "https://mlosfoundation.org/blog.html?id=kernel-performance-evolution-v7",
+      "primary": true
+    },
+    {
+      "text": "v7.0.0 Release",
+      "url": "https://github.com/mlOS-foundation/core/releases/tag/v7.0.0",
+      "primary": false
+    },
+    {
+      "text": "Performance Analysis Docs",
+      "url": "https://github.com/mlOS-foundation/core/blob/main/docs/KERNEL_PERFORMANCE_ANALYSIS.md",
+      "primary": false
+    },
+    {
+      "text": "Changelog",
+      "url": "https://github.com/mlOS-foundation/core/blob/main/CHANGELOG.md",
+      "primary": false
+    },
+    {
+      "text": "E2E Test Reports",
+      "url": "https://mlos-foundation.github.io/system-test/",
+      "primary": false
+    }
+  ],
+  "tags": ["performance", "kernel", "memory-optimization", "tensor-fusion", "deduplication", "benchmarks", "release-analysis"],
+  "related_releases": ["v6.3.0-alpha", "v7.0.0-beta", "v7.0.0"]
+}
