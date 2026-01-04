@@ -1,0 +1,141 @@
+name: Sync Blogs to Website
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/blogs/entries/**'
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync all blog posts'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect-blog-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for blog changes
+        id: check
+        run: |
+          if [ "${{ github.event.inputs.force_sync }}" = "true" ]; then
+            echo "Force sync requested"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'docs/blogs/entries/*.json' 2>/dev/null | wc -l || echo "0")
+            if [ "$CHANGED" -gt 0 ]; then
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "Found $CHANGED changed blog files"
+            else
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              echo "No blog changes detected"
+            fi
+          fi
+
+  validate-and-sync:
+    needs: detect-blog-changes
+    if: needs.detect-blog-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install ajv-cli
+        run: npm install -g ajv-cli
+
+      - name: Validate blog entries
+        run: |
+          SCHEMA_FILE="docs/blogs/blog-schema.json"
+          if [ ! -f "$SCHEMA_FILE" ]; then
+            echo "⚠️ Schema file not found, skipping validation"
+            exit 0
+          fi
+
+          echo "Validating blog entries..."
+          ERRORS=0
+          for file in docs/blogs/entries/*.json; do
+            if [ -f "$file" ]; then
+              echo "Validating: $file"
+              if ! ajv validate -s "$SCHEMA_FILE" -d "$file" 2>&1; then
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+          done
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "❌ $ERRORS validation errors"
+            exit 1
+          fi
+          echo "✅ All blog entries valid"
+
+      - name: Build blog feed
+        run: |
+          echo "Building blog feed..."
+          echo '{"source": "core-releases", "repo": "mlOS-foundation/core-releases", "generated_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", "entries": [' > /tmp/blogs.json
+
+          FIRST=true
+          for file in $(find docs/blogs/entries -name "*.json" -type f | sort -r); do
+            if [ -f "$file" ]; then
+              if [ "$FIRST" = "true" ]; then
+                FIRST=false
+              else
+                echo "," >> /tmp/blogs.json
+              fi
+              cat "$file" >> /tmp/blogs.json
+            fi
+          done
+
+          echo ']}' >> /tmp/blogs.json
+          echo "📝 Blog feed built"
+
+      - name: Trigger website update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Since this is a public repo, we can use repository_dispatch
+          # The website workflow will fetch from this public repo
+
+          echo "📡 Triggering website blog sync..."
+
+          # Use the PAT if available, otherwise skip
+          if [ -n "${{ secrets.WEBSITE_DISPATCH_TOKEN }}" ]; then
+            curl -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.WEBSITE_DISPATCH_TOKEN }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/mlOS-foundation/mlosfoundation.org/dispatches \
+              -d '{"event_type": "blog-update", "client_payload": {"source": "core-releases"}}'
+            echo "✅ Website update triggered"
+          else
+            echo "ℹ️ WEBSITE_DISPATCH_TOKEN not set"
+            echo "Website can manually fetch from this public repo"
+          fi
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📝 Blog Sync Complete"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Repo: mlOS-foundation/core-releases (public)"
+          echo "Blog files available at:"
+          echo "  https://github.com/mlOS-foundation/core-releases/tree/main/docs/blogs/entries"
+          echo ""

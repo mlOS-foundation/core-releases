@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://mlosfoundation.org/schemas/blog-entry.json",
+  "title": "MLOS Blog Entry",
+  "description": "Schema for technical blog posts in MLOS Foundation repositories",
+  "type": "object",
+  "required": ["id", "title", "date", "author", "summary", "content"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the blog post (e.g., 'kernel-performance-v7-analysis')",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "title": {
+      "type": "string",
+      "description": "Title of the blog post",
+      "minLength": 10,
+      "maxLength": 200
+    },
+    "date": {
+      "type": "string",
+      "description": "Publication date in ISO 8601 format (YYYY-MM-DD)",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "author": {
+      "type": "object",
+      "description": "Author information",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Author name"
+        },
+        "github": {
+          "type": "string",
+          "description": "GitHub username"
+        },
+        "role": {
+          "type": "string",
+          "description": "Author's role (e.g., 'Core Developer', 'Performance Engineer')"
+        }
+      }
+    },
+    "category": {
+      "type": "string",
+      "description": "Blog category",
+      "enum": ["performance", "architecture", "tutorial", "release-analysis", "deep-dive", "announcement"]
+    },
+    "featured": {
+      "type": "boolean",
+      "description": "Whether this is a featured/highlighted blog post",
+      "default": false
+    },
+    "badge": {
+      "type": "string",
+      "description": "Badge text to display (e.g., 'DEEP DIVE', 'PERFORMANCE')",
+      "maxLength": 30
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short summary of the blog post (1-3 sentences)",
+      "minLength": 20,
+      "maxLength": 500
+    },
+    "content": {
+      "type": "string",
+      "description": "Full blog content in Markdown format"
+    },
+    "reading_time": {
+      "type": "string",
+      "description": "Estimated reading time (e.g., '8 min read')"
+    },
+    "performance_data": {
+      "type": "object",
+      "description": "Performance comparison data for analysis posts",
+      "properties": {
+        "releases_compared": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["version", "date"],
+            "properties": {
+              "version": { "type": "string" },
+              "date": { "type": "string" },
+              "name": { "type": "string" },
+              "type": { "type": "string", "enum": ["alpha", "beta", "stable"] }
+            }
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "unit"],
+            "properties": {
+              "name": { "type": "string" },
+              "unit": { "type": "string" },
+              "values": {
+                "type": "object",
+                "additionalProperties": { "type": ["string", "number"] }
+              },
+              "improvement": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "key_highlights": {
+      "type": "array",
+      "description": "Key highlights/takeaways from the blog post",
+      "items": {
+        "type": "object",
+        "required": ["title", "description"],
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "icon": { "type": "string" }
+        }
+      }
+    },
+    "links": {
+      "type": "array",
+      "description": "Related links",
+      "items": {
+        "type": "object",
+        "required": ["text", "url"],
+        "properties": {
+          "text": { "type": "string" },
+          "url": { "type": "string", "pattern": "^https?://" },
+          "primary": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "description": "Tags for categorization",
+      "items": { "type": "string" }
+    },
+    "source_repo": {
+      "type": "string",
+      "description": "Source repository (auto-populated by sync workflow)",
+      "pattern": "^[a-zA-Z0-9-]+/[a-zA-Z0-9-_.]+$"
+    },
+    "related_releases": {
+      "type": "array",
+      "description": "Related release versions",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}
